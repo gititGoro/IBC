@@ -1,6 +1,6 @@
 
 //Write your own contracts here. Currently compiles using solc v0.4.15+commit.bbb8e64f.
-pragma solidity ^0.4.18;
+pragma solidity ^0.4.20;
 
 
 contract ERC20 {
@@ -67,12 +67,12 @@ contract Scarcity is ERC20{
     }
 }
 
-contract InvertedBondingCurve { //S=1/10*A, V = 1/20*A^2 
+contract InvertedBondingCurve { //Ps = 3x10^11*(A^-0.5)
   address scarcityAddress;
   mapping (address=>uint) tokenBalance;
   uint scarcityFees;
   address owner;
-  mapping(address => uint) tokenOffsets;
+  mapping(address => uint) scalingFactor;
   mapping (address => bool) validTokens;
   address tokenInjector;
 
@@ -91,49 +91,39 @@ contract InvertedBondingCurve { //S=1/10*A, V = 1/20*A^2
       scarcityAddress = scarcityToken;
   }
 
-  function injectNewToken (address tokenContract,uint offset) public {
-      tokenOffsets[tokenContract]= offset;
+  function injectNewToken (address tokenContract,uint factor) public {
+      scalingFactor[tokenContract]= factor;
       validTokens[tokenContract] = true;
   }
 
   function sellTokenForScarcity(address tokenContract, uint tokenAmount) public {
-    require(validTokens[tokenContract]=true);
-    ERC20(tokenContract).transferFrom(msg.sender, this, tokenAmount);
-
-    uint scarcityValueOfPurchase = getIntegralBetween2Points(tokenContract,tokenBalance[tokenContract]+tokenAmount, tokenBalance[tokenContract]);
-    tokenBalance[tokenContract] = tokenBalance[tokenContract] + tokenAmount;
-
-    //V = Ps.A
-    //Ps = V/a
-    //Ps*A = V
-
-    Scarcity(scarcityAddress).issue(scarcityValueOfPurchase*99/100, msg.sender);
-    scarcityFees+=scarcityValueOfPurchase/100;
+      ERC20(tokenContract).transferFrom(msg.sender,this,tokenAmount);
+      uint scarcity = calculateScarcityBetween2Points(tokenContract,tokenBalance[tokenContract]+tokenAmount,tokenBalance[tokenContract]);
+      Scarcity(scarcityAddress).issue(scarcity,msg.sender);
+      tokenBalance[tokenContract]+=tokenAmount;
   }
 
    function buyTokenWithScarcity (address tokenContract, uint scarcityAmount) public {
-      //V = 1/2A^2(finish) - 1/2A^2(start)
-      //let 1/2A^2(finish) =B
-      //V-B = 1/2A**2;
-      //(2(V-B))**0.5 = A
-      require(validTokens[tokenContract]=true);
-
-      uint scarcityValueOfExistingTokenStock = 
-      getIntegralBetween2Points(tokenContract, tokenBalance[tokenContract], 0);
-      uint tokenQuantityToSend = sqrt(2*(scarcityAmount - scarcityValueOfExistingTokenStock));
-      require(tokenBalance[tokenContract]>tokenQuantityToSend);
-
-      Scarcity(scarcityAddress).burn(scarcityAmount, msg.sender);
-
-      tokenBalance[tokenContract] -= tokenQuantityToSend;
-
-      ERC20(tokenContract).transfer(msg.sender,tokenQuantityToSend);
+     uint LHS = scarcityAmount/(3*(10**scalingFactor[tokenContract]));
+     uint endBalance = (LHS - sqrt(tokenBalance[tokenContract]))**2;
+     uint amountToSend = tokenBalance[tokenContract] - endBalance;
+     ERC20(tokenContract).transfer(msg.sender,amountToSend);
+     tokenBalance[tokenContract] = endBalance;
    }
 
     function withdrawScarcityFees () public {
         require(msg.sender == owner);
         ERC20(scarcityAddress).transfer(msg.sender,scarcityFees);
     }
+
+      //for selling ERC for scarcity, use this
+    function calculateScarcityBetween2Points (address tokenContract, uint A0, uint A1) public view returns (uint) {
+        uint sqrtOfSmallerValue = A0==0?0:sqrt(A0);
+        uint coefficient = 3*10**scalingFactor[tokenContract];
+       return   coefficient*(sqrt(A1) - sqrtOfSmallerValue);
+    }
+
+
 
     function sqrt(uint x) internal pure returns (uint y) {
       uint z = (x + 1) / 2;
@@ -143,10 +133,4 @@ contract InvertedBondingCurve { //S=1/10*A, V = 1/20*A^2
           z = (x / z + z) / 2;
       }
   }
-
-     function getIntegralBetween2Points(address tokenContract, uint greater, uint lesser) private view returns(uint) {
-         require(greater>=lesser);
-         uint offset = tokenOffsets[tokenContract];
-         return (greater**2)/2 + greater*offset - (lesser**2)/2 - lesser*offset;
-       }
 }
