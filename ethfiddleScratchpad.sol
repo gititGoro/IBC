@@ -67,23 +67,34 @@ contract Scarcity is ERC20{
     }
 }
 
-contract InvertedBondingCurve { //Ps = 3x10^11*(A^-0.5)
+contract ValidTCR {
+    mapping(address => bool) validToken;
+
+  function addContract (address token) public {
+      validToken[token] = true;
+  }
+
+  function isValid(address token) public view returns (bool) {
+    return validToken[token];
+  }
+
+}
+
+contract InvertedBondingCurve { //Pt = 10S, Pt = 8S
   address scarcityAddress;
-  mapping (address=>uint) tokenBalance;
-  uint scarcityFees;
+  mapping (address=>uint) tokenReserve; //debit
+  mapping (address=>uint) tokenScarcityObligations; //credit
   address owner;
-  mapping(address => uint) scalingFactor;
-  mapping (address => bool) validTokens;
-  address tokenInjector;
+  address tokenValidator;
 
   function changeOwner (address newOwner) public {
     if(owner == address(0) || owner == msg.sender)
       owner = newOwner;
   } 
 
- function changeInjector (address injector) public {
-    if(tokenInjector == address(0) || tokenInjector == msg.sender)
-      tokenInjector = injector;
+ function changeInjector (address validator) public {
+    if(tokenValidator == address(0) || tokenValidator == msg.sender)
+      tokenValidator = validator;
   } 
 
   function setScarcityAddress(address scarcityToken) public {
@@ -91,38 +102,49 @@ contract InvertedBondingCurve { //Ps = 3x10^11*(A^-0.5)
       scarcityAddress = scarcityToken;
   }
 
-  function injectNewToken (address tokenContract,uint factor) public {
-      scalingFactor[tokenContract]= factor;
-      validTokens[tokenContract] = true;
-  }
+  function buyScarcity(address tokenContract, uint tokenAmount) public {
+      require(ValidTCR(tokenValidator).isValid(tokenContract));
+      uint finalTokens = tokenReserve[tokenContract] + tokenAmount;
+      uint finalScarcity = sqrt(finalTokens/5);
+      uint scarcityToPrint = finalScarcity - tokenScarcityObligations[tokenContract];
 
-  function sellTokenForScarcity(address tokenContract, uint tokenAmount) public {
+      //issue scarcity, take tokens
+      Scarcity(scarcityAddress).issue(scarcityToPrint, msg.sender);
       ERC20(tokenContract).transferFrom(msg.sender,this,tokenAmount);
-      uint scarcity = calculateScarcityBetween2Points(tokenContract,tokenBalance[tokenContract]+tokenAmount,tokenBalance[tokenContract]);
-      Scarcity(scarcityAddress).issue(scarcity,msg.sender);
-      tokenBalance[tokenContract]+=tokenAmount;
+
+      //bookkeeping
+      tokenScarcityObligations[tokenContract] = finalScarcity;
+      tokenReserve[tokenContract] = finalTokens;
   }
 
-   function buyTokenWithScarcity (address tokenContract, uint scarcityAmount) public {
-     uint LHS = scarcityAmount/(3*(10**scalingFactor[tokenContract]));
-     uint endBalance = (LHS - sqrt(tokenBalance[tokenContract]))**2;
-     uint amountToSend = tokenBalance[tokenContract] - endBalance;
-     ERC20(tokenContract).transfer(msg.sender,amountToSend);
-     tokenBalance[tokenContract] = endBalance;
-   }
+  function sellScarcity (address tokenContract, uint scarcity) public {
+      require(ValidTCR(tokenValidator).isValid(tokenContract));
+      require(scarcity<=tokenScarcityObligations[tokenContract]);
+      uint scarcityAfter = tokenScarcityObligations[tokenContract] - scarcity;
+      uint tokenValueCurrently = 4*(tokenScarcityObligations[tokenContract]**2);
+      uint tokensAfter = 4*(scarcityAfter**2);
 
-    function withdrawScarcityFees () public {
-        require(msg.sender == owner);
-        ERC20(scarcityAddress).transfer(msg.sender,scarcityFees);
-    }
+      uint tokensToSendToUser = tokenValueCurrently - tokensAfter;
 
-      //for selling ERC for scarcity, use this
-    function calculateScarcityBetween2Points (address tokenContract, uint A0, uint A1) public view returns (uint) {
-        uint sqrtOfSmallerValue = A0==0?0:sqrt(A0);
-        uint coefficient = 3*10**scalingFactor[tokenContract];
-       return   coefficient*(sqrt(A1) - sqrtOfSmallerValue);
-    }
+      tokenReserve[tokenContract] =  tokenReserve[tokenContract]-tokensToSendToUser;
+      tokenScarcityObligations[tokenContract] = scarcityAfter;
 
+      Scarcity(scarcityAddress).burn(scarcity,msg.sender);
+      ERC20(tokenContract).transfer(msg.sender,tokensToSendToUser);
+  }
+
+  function withdrawTokenSurplus(address tokenContract) public {
+    require(msg.sender == owner);
+    uint tokenSaleObligations =  4*(tokenScarcityObligations[tokenContract]**2);
+    uint surplus = tokenReserve[tokenContract] - tokenSaleObligations;
+    ERC20(tokenContract).transfer(owner,surplus);
+  }
+
+  function calculateTokenValue (uint scarcityAmount, uint coefficient, uint offset) public pure returns (uint) {
+      //Pt = coefficientS + offset
+      //V = 1/2*coefficient*S^2 +offset*S 
+      return (coefficient/2)*(scarcityAmount**2) + offset*scarcityAmount;
+  }
 
 
     function sqrt(uint x) internal pure returns (uint y) {
