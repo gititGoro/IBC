@@ -107,7 +107,7 @@ contract InvertedBondingCurve { //Pt = 10S, Pt = 8S
       uint finalTokens = tokenReserve[tokenContract] + tokenAmount;
       uint finalScarcity = sqrt(finalTokens/5);
       uint scarcityToPrint = finalScarcity - tokenScarcityObligations[tokenContract];
-
+      require(scarcityToPrint > 0);
       //issue scarcity, take tokens
       Scarcity(scarcityAddress).issue(scarcityToPrint, msg.sender);
       ERC20(tokenContract).transferFrom(msg.sender,this,tokenAmount);
@@ -125,7 +125,8 @@ contract InvertedBondingCurve { //Pt = 10S, Pt = 8S
       uint tokensAfter = 4*(scarcityAfter**2);
 
       uint tokensToSendToUser = tokenValueCurrently - tokensAfter;
-
+      require(tokensToSendToUser > 0);
+      
       tokenReserve[tokenContract] =  tokenReserve[tokenContract]-tokensToSendToUser;
       tokenScarcityObligations[tokenContract] = scarcityAfter;
 
